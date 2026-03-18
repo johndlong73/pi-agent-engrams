@@ -33,7 +33,10 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    await startIndex(currentConfig, ctx);
+    // Fire-and-forget: don't block session startup if indexing is slow
+    // (e.g. embedder credentials are unavailable). The search tool already
+    // handles the index not being ready gracefully.
+    void startIndex(currentConfig, ctx);
   });
 
   pi.on("session_shutdown", async () => {
@@ -46,14 +49,26 @@ export default function (pi: ExtensionAPI) {
       index = new KnowledgeIndex(config, embedder);
       await index.load();
 
-      const { added, updated, removed } = await index.sync();
-      const changes = added + updated + removed;
-      if (changes > 0) {
-        ctx.ui.setStatus(
-          "knowledge-search",
-          `Index: +${added} ~${updated} -${removed} (${index.size()} files)`
-        );
-        setTimeout(() => ctx.ui.setStatus("knowledge-search", ""), 5000);
+      // Sync with a timeout so a hung embedder doesn't block forever.
+      // The loaded cache is still usable for searches even if sync times out.
+      const SYNC_TIMEOUT_MS = 60_000;
+      const syncResult = await Promise.race([
+        index.sync(),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), SYNC_TIMEOUT_MS)),
+      ]);
+
+      if (syncResult === null) {
+        ctx.ui.notify("knowledge-search: sync timed out (index may be stale)", "warning");
+      } else {
+        const { added, updated, removed } = syncResult;
+        const changes = added + updated + removed;
+        if (changes > 0) {
+          ctx.ui.setStatus(
+            "knowledge-search",
+            `Index: +${added} ~${updated} -${removed} (${index.size()} files)`
+          );
+          setTimeout(() => ctx.ui.setStatus("knowledge-search", ""), 5000);
+        }
       }
 
       watcher = new FileWatcher(config, index);
