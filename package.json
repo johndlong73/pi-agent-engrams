@@ -1,22 +1,21 @@
 {
-  "name": "pi-knowledge-search",
+  "name": "pi-agent-engrams",
   "version": "0.1.0",
-  "description": "Semantic search over local files for pi. Indexes a directory of text files, watches for changes, and exposes a knowledge_search tool to the LLM.",
+  "description": "Agent memory system for pi. Writes structured engram documents, indexes them with vector embeddings, and exposes semantic search with metadata filtering.",
   "keywords": ["pi-package"],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/samfoy/pi-knowledge-search"
+    "url": "https://github.com/samfoy/pi-agent-engrams"
   },
   "pi": {
     "extensions": ["./src/index.ts"]
   },
+  "dependencies": {
+    "yaml": "^2.7.1"
+  },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
     "@sinclair/typebox": "*"
-  },
-  "optionalDependencies": {
-    "@aws-sdk/client-bedrock-runtime": "3.750.0",
-    "@aws-sdk/credential-providers": "3.750.0"
   }
 }

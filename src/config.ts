@@ -1,177 +1,82 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-export interface Config {
-  /** Directories to index */
-  dirs: string[];
-  /** File extensions to index (with dots) */
-  fileExtensions: string[];
-  /** Directory names to skip */
-  excludeDirs: string[];
-  /** Embedding dimensions */
-  dimensions: number;
-  /** Embedding provider config */
-  provider: ProviderConfig;
-  /** Where to store the index */
-  indexDir: string;
+const HOME = process.env.HOME || "/tmp";
+
+const ENGRAMS_DIR = path.join(HOME, ".pi", "agent", "engrams", "docs");
+const INDEX_DIR = path.join(HOME, ".pi", "agent-engrams");
+const FILE_EXTENSIONS = [".md"];
+const EXCLUDE_DIRS = [".git", ".trash"];
+const DEFAULT_DIMENSIONS = 512;
+const DEFAULT_OLLAMA_URL = "http://localhost:11434";
+const DEFAULT_OLLAMA_MODEL = "nomic-embed-text";
+
+export interface OllamaConfig {
+  url: string;
+  model: string;
 }
 
-export type ProviderConfig =
-  | { type: "openai"; apiKey: string; model: string }
-  | { type: "bedrock"; profile: string; region: string; model: string }
-  | { type: "ollama"; url: string; model: string };
+export interface Config {
+  engramsDir: string;
+  indexDir: string;
+  fileExtensions: string[];
+  excludeDirs: string[];
+  dimensions: number;
+  ollama: OllamaConfig;
+}
 
-/** Raw shape stored in the config file. */
-export interface ConfigFile {
-  dirs: string[];
-  fileExtensions?: string[];
-  excludeDirs?: string[];
+interface ConfigFile {
+  ollama?: { url?: string; model?: string };
   dimensions?: number;
-  provider:
-    | { type: "openai"; apiKey?: string; model?: string }
-    | { type: "bedrock"; profile?: string; region?: string; model?: string }
-    | { type: "ollama"; url?: string; model?: string };
 }
 
 const CONFIG_PATH =
-  process.env.KNOWLEDGE_SEARCH_CONFIG ||
-  path.join(process.env.HOME || "/tmp", ".pi", "knowledge-search.json");
+  process.env.AGENT_ENGRAMS_CONFIG ||
+  path.join(HOME, ".pi", "agent-engrams.json");
 
 export function getConfigPath(): string {
   return CONFIG_PATH;
 }
 
 /**
- * Load config from file, with env var overrides.
- * Returns null if no config file exists (needs setup).
+ * Load config with hardcoded defaults and optional file/env overrides.
+ * Always returns a valid Config — no setup step required.
  */
-export function loadConfig(): Config | null {
-  // Try config file first
+export function loadConfig(): Config {
   let file: ConfigFile | null = null;
   if (fs.existsSync(CONFIG_PATH)) {
     try {
       file = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
     } catch {
-      // Corrupted file
+      // Corrupted file — use defaults
     }
   }
 
-  // Check env var fallback for dirs (the one required field)
-  const envDirs = process.env.KNOWLEDGE_SEARCH_DIRS;
+  const ollamaUrl =
+    envStr("AGENT_ENGRAMS_OLLAMA_URL") ??
+    file?.ollama?.url ??
+    DEFAULT_OLLAMA_URL;
 
-  if (!file && !envDirs) {
-    return null; // Not configured yet
-  }
+  const ollamaModel =
+    envStr("AGENT_ENGRAMS_OLLAMA_MODEL") ??
+    file?.ollama?.model ??
+    DEFAULT_OLLAMA_MODEL;
 
-  // Build config: file values, then env overrides
-  const home = process.env.HOME || "/tmp";
-  const resolvePath = (p: string) => p.replace(/^~/, home);
-
-  const dirs = (envDirs ? envDirs.split(",").map((d) => d.trim()) : file!.dirs)
-    .map(resolvePath)
-    .filter(Boolean);
-
-  if (dirs.length === 0) return null;
-
-  const fileExtensions = envStr("KNOWLEDGE_SEARCH_EXTENSIONS") ?.split(",").map((e) => e.trim()) ??
-    file?.fileExtensions ?? [".md", ".txt"];
-
-  const excludeDirs = envStr("KNOWLEDGE_SEARCH_EXCLUDE")?.split(",").map((d) => d.trim()) ??
-    file?.excludeDirs ?? ["node_modules", ".git", ".obsidian", ".trash"];
-
-  const dimensions = envInt("KNOWLEDGE_SEARCH_DIMENSIONS") ??
-    file?.dimensions ?? 512;
-
-  const providerType = envStr("KNOWLEDGE_SEARCH_PROVIDER") ??
-    file?.provider?.type ?? "openai";
-
-  let provider: ProviderConfig;
-  switch (providerType) {
-    case "openai": {
-      const apiKey =
-        envStr("KNOWLEDGE_SEARCH_OPENAI_API_KEY") ??
-        process.env.OPENAI_API_KEY ??
-        (file?.provider?.type === "openai" ? file.provider.apiKey : undefined);
-      if (!apiKey) {
-        throw new Error(
-          "OpenAI API key required. Run /knowledge-search-setup or set OPENAI_API_KEY."
-        );
-      }
-      provider = {
-        type: "openai",
-        apiKey,
-        model:
-          envStr("KNOWLEDGE_SEARCH_OPENAI_MODEL") ??
-          (file?.provider?.type === "openai"
-            ? file.provider.model
-            : undefined) ??
-          "text-embedding-3-small",
-      };
-      break;
-    }
-    case "bedrock":
-      provider = {
-        type: "bedrock",
-        profile:
-          envStr("KNOWLEDGE_SEARCH_BEDROCK_PROFILE") ??
-          (file?.provider?.type === "bedrock"
-            ? file.provider.profile
-            : undefined) ??
-          "default",
-        region:
-          envStr("KNOWLEDGE_SEARCH_BEDROCK_REGION") ??
-          (file?.provider?.type === "bedrock"
-            ? file.provider.region
-            : undefined) ??
-          "us-east-1",
-        model:
-          envStr("KNOWLEDGE_SEARCH_BEDROCK_MODEL") ??
-          (file?.provider?.type === "bedrock"
-            ? file.provider.model
-            : undefined) ??
-          "amazon.titan-embed-text-v2:0",
-      };
-      break;
-    case "ollama":
-      provider = {
-        type: "ollama",
-        url:
-          envStr("KNOWLEDGE_SEARCH_OLLAMA_URL") ??
-          (file?.provider?.type === "ollama"
-            ? file.provider.url
-            : undefined) ??
-          "http://localhost:11434",
-        model:
-          envStr("KNOWLEDGE_SEARCH_OLLAMA_MODEL") ??
-          (file?.provider?.type === "ollama"
-            ? file.provider.model
-            : undefined) ??
-          "nomic-embed-text",
-      };
-      break;
-    default:
-      throw new Error(
-        `Unknown provider: "${providerType}". Use "openai", "bedrock", or "ollama".`
-      );
-  }
-
-  const indexDir =
-    envStr("KNOWLEDGE_SEARCH_INDEX_DIR") ??
-    path.join(home, ".pi", "knowledge-search");
+  const dimensions =
+    envInt("AGENT_ENGRAMS_DIMENSIONS") ??
+    file?.dimensions ??
+    DEFAULT_DIMENSIONS;
 
   return {
-    dirs,
-    fileExtensions,
-    excludeDirs: excludeDirs,
+    engramsDir: ENGRAMS_DIR,
+    indexDir: INDEX_DIR,
+    fileExtensions: FILE_EXTENSIONS,
+    excludeDirs: EXCLUDE_DIRS,
     dimensions,
-    provider,
-    indexDir,
+    ollama: { url: ollamaUrl, model: ollamaModel },
   };
 }
 
-/**
- * Save config to file.
- */
 export function saveConfig(config: ConfigFile): void {
   const dir = path.dirname(CONFIG_PATH);
   fs.mkdirSync(dir, { recursive: true });

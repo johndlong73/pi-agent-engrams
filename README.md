@@ -1,125 +1,134 @@
-# pi-knowledge-search
+# pi-agent-engrams
 
-Semantic search over local files for [pi](https://github.com/badlogic/pi). Indexes directories of text/markdown files using vector embeddings, watches for changes in real-time, and exposes a `knowledge_search` tool the LLM can call.
+Agent memory system for [pi](https://github.com/badlogic/pi). When an agent learns something valuable during a task — a debugging technique, an API quirk, a domain pattern — it writes a structured **engram** document. Later, any agent can semantically search the engram store to recall relevant knowledge before starting work.
+
+Built as a purpose-scoped fork of [pi-knowledge-search](https://github.com/samfoy/pi-knowledge-search) with frontmatter-aware indexing, metadata filtering, and dedicated read/write tools.
 
 ## Install
 
 ```bash
-pi install git:github.com/samfoy/pi-knowledge-search
+pi install git:github.com/samfoy/pi-agent-engrams
 ```
 
-Or try without installing:
+### Prerequisites
 
-```bash
-pi -e git:github.com/samfoy/pi-knowledge-search
-```
+[Ollama](https://ollama.ai) must be running locally with an embedding model pulled:
 
-## Setup
-
-Run the interactive setup command inside pi:
-
-```
-/knowledge-search-setup
-```
-
-This walks you through:
-1. **Directories** to index (comma-separated paths)
-2. **File extensions** to include (default: `.md, .txt`)
-3. **Directories to exclude** (default: `node_modules, .git, .obsidian, .trash`)
-4. **Embedding provider** — OpenAI, AWS Bedrock, or local Ollama
-
-Config is saved to `~/.pi/knowledge-search.json`. Run `/reload` to activate.
-
-### Config file
-
-You can also edit the config file directly:
-
-```json
-{
-  "dirs": ["~/notes", "~/docs"],
-  "fileExtensions": [".md", ".txt"],
-  "excludeDirs": ["node_modules", ".git", ".obsidian", ".trash"],
-  "provider": {
-    "type": "openai",
-    "model": "text-embedding-3-small"
-  }
-}
-```
-
-The API key for OpenAI can be set in the config file (`"apiKey": "sk-..."`) or via the `OPENAI_API_KEY` environment variable.
-
-<details>
-<summary>Bedrock config</summary>
-
-```json
-{
-  "dirs": ["~/vault"],
-  "provider": {
-    "type": "bedrock",
-    "profile": "my-aws-profile",
-    "region": "us-west-2",
-    "model": "amazon.titan-embed-text-v2:0"
-  }
-}
-```
-
-Requires the AWS SDK and valid credentials for the specified profile.
-
-</details>
-
-<details>
-<summary>Ollama config (free, local)</summary>
-
-```json
-{
-  "dirs": ["~/notes"],
-  "provider": {
-    "type": "ollama",
-    "url": "http://localhost:11434",
-    "model": "nomic-embed-text"
-  }
-}
-```
-
-Requires [Ollama](https://ollama.ai) running locally:
 ```bash
 ollama serve
 ollama pull nomic-embed-text
 ```
 
-</details>
-
-### Environment variable overrides
-
-Every config field can be overridden via environment variables. This is useful for CI or when you want different settings per shell session. See [env-vars.md](docs/env-vars.md) for the full list.
-
 ## How it works
 
-1. On session start, loads the index from disk and incrementally syncs — only re-embeds new or modified files
-2. Starts a file watcher for real-time updates (debounced, 2s)
-3. Registers a `knowledge_search` tool the LLM calls with natural language queries
-4. Returns ranked results with file paths, relevance scores, and content excerpts
+**Write cycle (learning):**
 
-The index is stored at `~/.pi/knowledge-search/index.json`.
+1. An agent encounters something worth remembering — a non-obvious fix, a domain constraint, an API behavior
+2. The agent calls `engrams_write` with structured content (title, category, tags, insight, etc.)
+3. The tool renders a markdown file from a template and writes it to `~/.pi/agent/engrams/docs/`
+4. The file watcher detects the new file, generates an embedding via Ollama, and adds it to the vector index
+
+**Read cycle (recall):**
+
+1. An agent starting a new task calls `engrams_search` with a natural language query
+2. The query is embedded and compared against the engram index using cosine similarity
+3. Optional metadata filters (category, agent, durability, tags) narrow the results
+4. Ranked results with relevance scores, content excerpts, and metadata are returned
+
+## Engram document template
+
+Each engram follows a structured markdown template:
+
+```markdown
+---
+Category: debugging
+Tags: timeout, api, retry
+Durability: permanent
+Agent: backend-software-engineer
+Date: 2025-03-15
+Source: PROJ-1234
+---
+
+# Retry logic must respect upstream rate limits
+
+## Context
+
+What situation triggered this learning?
+
+## Insight
+
+What was learned? What is the non-obvious part?
+
+## Application
+
+**Trigger:** specific conditions when this engram is relevant
+**Anti-trigger:** conditions when this engram should NOT be applied
+
+## Supersedes
+
+None
+```
+
+### Metadata fields
+
+| Field | Values | Purpose |
+|-------|--------|---------|
+| Category | `debugging`, `api`, `architecture`, `tooling`, `domain`, `performance`, `testing` | Primary classification |
+| Tags | Comma-separated keywords | Discoverability |
+| Durability | `permanent`, `workaround`, `hypothesis` | Trust level — permanent is verified, workaround is temporary, hypothesis is unverified |
+| Agent | Agent name | Authorship tracking |
+| Date | ISO date | When the engram was created |
+| Source | Ticket key, PR URL, or description | What triggered the learning |
+
+## Tools
+
+### `engrams_write`
+
+Creates a new engram document from structured parameters. The agent provides title, category, tags, durability, context, insight, trigger/anti-trigger, and the tool renders and saves the markdown file.
+
+### `engrams_search`
+
+Semantic search with optional metadata filters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `query` | string | Natural language search query |
+| `limit` | number | Max results (default 8, max 20) |
+| `category` | string | Filter by category |
+| `agent` | string | Filter by authoring agent |
+| `durability` | string | Filter by durability level |
+| `tags` | string[] | Filter by tags (match any) |
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `/knowledge-search-setup` | Interactive setup wizard |
-| `/knowledge-reindex` | Force a full re-index |
+| `/engrams-setup` | Configure Ollama connection (URL, model, dimensions) |
+| `/engrams-reindex` | Force a full re-index of all engram documents |
 
-## Performance
+## Configuration
 
-Typical numbers for ~500 markdown files (~20MB):
+Works out of the box with zero configuration if Ollama is running on localhost with `nomic-embed-text`.
 
-| Operation | Time |
-|-----------|------|
-| Full index build | ~7s |
-| Incremental sync (no changes) | ~12ms |
-| File re-embed (watcher) | ~200ms |
-| Search query | ~250ms |
-| Index file size | ~5MB |
+Optional config file at `~/.pi/agent-engrams.json`:
+
+```json
+{
+  "ollama": {
+    "url": "http://localhost:11434",
+    "model": "nomic-embed-text"
+  },
+  "dimensions": 512
+}
+```
+
+All settings can be overridden via environment variables. See [docs/env-vars.md](docs/env-vars.md).
+
+## Storage
+
+- Engram documents: `~/.pi/agent/engrams/docs/`
+- Vector index: `~/.pi/agent-engrams/index.json`
+- Config file: `~/.pi/agent-engrams.json`
 
 ## License
 

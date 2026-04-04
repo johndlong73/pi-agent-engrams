@@ -1,76 +1,68 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Config } from "./config";
-import type { KnowledgeIndex } from "./index-store";
+import type { EngramIndex } from "./index-store";
 
 /**
- * Watches configured directories for file changes and updates the index in real-time.
+ * Watches the engrams directory for file changes and updates the index in real-time.
  * Uses Node.js fs.watch (recursive) with debouncing.
  */
 export class FileWatcher {
   private config: Config;
-  private index: KnowledgeIndex;
-  private watchers: fs.FSWatcher[] = [];
+  private index: EngramIndex;
+  private watcher: fs.FSWatcher | null = null;
   private pending = new Map<string, ReturnType<typeof setTimeout>>();
   private DEBOUNCE_MS = 2000;
 
-  constructor(config: Config, index: KnowledgeIndex) {
+  constructor(config: Config, index: EngramIndex) {
     this.config = config;
     this.index = index;
   }
 
   start(): void {
-    for (const dir of this.config.dirs) {
-      try {
-        const watcher = fs.watch(
-          dir,
-          { recursive: true },
-          (eventType, filename) => {
-            if (!filename) return;
-            const relPath = filename.replace(/\\/g, "/");
+    const dir = this.config.engramsDir;
+    try {
+      this.watcher = fs.watch(
+        dir,
+        { recursive: true },
+        (_eventType, filename) => {
+          if (!filename) return;
+          const relPath = filename.replace(/\\/g, "/");
 
-            // Check file extension
-            const ext = path.extname(relPath);
-            if (!this.config.fileExtensions.includes(ext)) return;
+          const ext = path.extname(relPath);
+          if (!this.config.fileExtensions.includes(ext)) return;
 
-            // Skip excluded directories and dotfiles
-            const parts = relPath.split("/");
-            for (const part of parts) {
-              if (this.config.excludeDirs.includes(part) || part.startsWith(".")) {
-                return;
-              }
+          const parts = relPath.split("/");
+          for (const part of parts) {
+            if (
+              this.config.excludeDirs.includes(part) ||
+              part.startsWith(".")
+            ) {
+              return;
             }
+          }
 
-            const absPath = path.join(dir, relPath);
-            this.debounce(absPath, dir);
-          }
-        );
-        // Handle watcher errors gracefully — transient files (e.g. sed -i
-        // temp files) can cause EACCES when the watcher tries to observe a
-        // file that's already been deleted.
-        watcher.on("error", (err: NodeJS.ErrnoException) => {
-          if (err.code === "EACCES" || err.code === "ENOENT") {
-            // Transient file — ignore silently
-            return;
-          }
-          console.error(
-            `knowledge-search: watcher error for ${dir}: ${err.message}`
-          );
-        });
-        this.watchers.push(watcher);
-      } catch (err: any) {
+          const absPath = path.join(dir, relPath);
+          this.debounce(absPath, dir);
+        }
+      );
+
+      this.watcher.on("error", (err: NodeJS.ErrnoException) => {
+        if (err.code === "EACCES" || err.code === "ENOENT") return;
         console.error(
-          `knowledge-search: watcher failed for ${dir}: ${err.message}`
+          `agent-engrams: watcher error for ${dir}: ${err.message}`
         );
-      }
+      });
+    } catch (err: any) {
+      console.error(
+        `agent-engrams: watcher failed for ${dir}: ${err.message}`
+      );
     }
   }
 
   stop(): void {
-    for (const w of this.watchers) {
-      w.close();
-    }
-    this.watchers = [];
+    this.watcher?.close();
+    this.watcher = null;
     for (const timer of this.pending.values()) {
       clearTimeout(timer);
     }
@@ -93,7 +85,7 @@ export class FileWatcher {
           }
         } catch (err: any) {
           console.error(
-            `knowledge-search: watcher update failed for ${absPath}: ${err.message}`
+            `agent-engrams: watcher update failed for ${absPath}: ${err.message}`
           );
         }
       }, this.DEBOUNCE_MS)

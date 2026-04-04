@@ -1,18 +1,15 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import {
-  loadConfig,
-  saveConfig,
-  getConfigPath,
-  type Config,
-  type ConfigFile,
-} from "./config";
+import { loadConfig, saveConfig, getConfigPath, type Config } from "./config";
 import { createEmbedder } from "./embedder";
-import { KnowledgeIndex } from "./index-store";
+import { renderEngram, slugify } from "./frontmatter";
+import { EngramIndex } from "./index-store";
 import { FileWatcher } from "./watcher";
 
 export default function (pi: ExtensionAPI) {
-  let index: KnowledgeIndex | null = null;
+  let index: EngramIndex | null = null;
   let watcher: FileWatcher | null = null;
   let currentConfig: Config | null = null;
 
@@ -24,18 +21,12 @@ export default function (pi: ExtensionAPI) {
     try {
       currentConfig = loadConfig();
     } catch (err: any) {
-      ctx.ui.notify(`knowledge-search: ${err.message}`, "warning");
+      ctx.ui.notify(`agent-engrams: ${err.message}`, "warning");
       return;
     }
 
-    if (!currentConfig) {
-      // Not configured yet — silent, user can run /knowledge-search-setup
-      return;
-    }
+    fs.mkdirSync(currentConfig.engramsDir, { recursive: true });
 
-    // Fire-and-forget: don't block session startup if indexing is slow
-    // (e.g. embedder credentials are unavailable). The search tool already
-    // handles the index not being ready gracefully.
     void startIndex(currentConfig, ctx);
   });
 
@@ -45,36 +36,39 @@ export default function (pi: ExtensionAPI) {
 
   async function startIndex(config: Config, ctx: any) {
     try {
-      const embedder = createEmbedder(config.provider, config.dimensions);
-      index = new KnowledgeIndex(config, embedder);
+      const embedder = createEmbedder(config.ollama);
+      index = new EngramIndex(config, embedder);
       await index.load();
 
-      // Sync with a timeout so a hung embedder doesn't block forever.
-      // The loaded cache is still usable for searches even if sync times out.
       const SYNC_TIMEOUT_MS = 60_000;
       const syncResult = await Promise.race([
         index.sync(),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), SYNC_TIMEOUT_MS)),
+        new Promise<null>((resolve) =>
+          setTimeout(() => resolve(null), SYNC_TIMEOUT_MS)
+        ),
       ]);
 
       if (syncResult === null) {
-        ctx.ui.notify("knowledge-search: sync timed out (index may be stale)", "warning");
+        ctx.ui.notify(
+          "agent-engrams: sync timed out (index may be stale)",
+          "warning"
+        );
       } else {
         const { added, updated, removed } = syncResult;
         const changes = added + updated + removed;
         if (changes > 0) {
           ctx.ui.setStatus(
-            "knowledge-search",
-            `Index: +${added} ~${updated} -${removed} (${index.size()} files)`
+            "agent-engrams",
+            `Index: +${added} ~${updated} -${removed} (${index.size()} engrams)`
           );
-          setTimeout(() => ctx.ui.setStatus("knowledge-search", ""), 5000);
+          setTimeout(() => ctx.ui.setStatus("agent-engrams", ""), 5000);
         }
       }
 
       watcher = new FileWatcher(config, index);
       watcher.start();
     } catch (err: any) {
-      ctx.ui.notify(`knowledge-search init failed: ${err.message}`, "error");
+      ctx.ui.notify(`agent-engrams init failed: ${err.message}`, "error");
     }
   }
 
@@ -82,134 +76,24 @@ export default function (pi: ExtensionAPI) {
   // Setup command
   // ------------------------------------------------------------------
 
-  pi.registerCommand("knowledge-search-setup", {
-    description: "Configure knowledge search directories and embedding provider",
+  pi.registerCommand("engrams-setup", {
+    description: "Configure agent engrams Ollama connection",
     handler: async (_args, ctx) => {
-      // Step 1: Directories
-      const dirsInput = await ctx.ui.input(
-        "Directories to index (comma-separated):",
-        "~/notes, ~/docs"
+      const url = await ctx.ui.input(
+        "Ollama URL:",
+        "http://localhost:11434"
       );
-      if (!dirsInput) {
-        ctx.ui.notify("Setup cancelled.", "info");
-        return;
-      }
+      const model = await ctx.ui.input("Embedding model:", "nomic-embed-text");
+      const dims = await ctx.ui.input("Embedding dimensions:", "512");
 
-      const dirs = dirsInput
-        .split(",")
-        .map((d: string) => d.trim())
-        .filter(Boolean);
+      saveConfig({
+        ollama: {
+          url: url || "http://localhost:11434",
+          model: model || "nomic-embed-text",
+        },
+        dimensions: dims ? parseInt(dims, 10) : 512,
+      });
 
-      if (dirs.length === 0) {
-        ctx.ui.notify("No directories specified.", "warning");
-        return;
-      }
-
-      // Step 2: File extensions
-      const extsInput = await ctx.ui.input(
-        "File extensions to index:",
-        ".md, .txt"
-      );
-      const fileExtensions = (extsInput || ".md, .txt")
-        .split(",")
-        .map((e: string) => e.trim())
-        .filter(Boolean);
-
-      // Step 3: Exclude directories
-      const excludeInput = await ctx.ui.input(
-        "Directory names to exclude:",
-        "node_modules, .git, .obsidian, .trash"
-      );
-      const excludeDirs = (
-        excludeInput || "node_modules, .git, .obsidian, .trash"
-      )
-        .split(",")
-        .map((d: string) => d.trim())
-        .filter(Boolean);
-
-      // Step 4: Provider
-      const providerChoice = await ctx.ui.select("Embedding provider:", [
-        "openai — OpenAI API (text-embedding-3-small)",
-        "bedrock — AWS Bedrock (Titan Embeddings v2)",
-        "ollama — Local Ollama (nomic-embed-text)",
-      ]);
-
-      if (!providerChoice) {
-        ctx.ui.notify("Setup cancelled.", "info");
-        return;
-      }
-
-      const providerType = providerChoice.split(" ")[0] as
-        | "openai"
-        | "bedrock"
-        | "ollama";
-
-      let configFile: ConfigFile;
-
-      switch (providerType) {
-        case "openai": {
-          const apiKey = await ctx.ui.input(
-            "OpenAI API key (or env var name):",
-            process.env.OPENAI_API_KEY ? "(using OPENAI_API_KEY from env)" : ""
-          );
-          const model = await ctx.ui.input(
-            "Model:",
-            "text-embedding-3-small"
-          );
-          configFile = {
-            dirs,
-            fileExtensions,
-            excludeDirs,
-            provider: {
-              type: "openai",
-              apiKey: apiKey?.startsWith("(") ? undefined : apiKey || undefined,
-              model: model || "text-embedding-3-small",
-            },
-          };
-          break;
-        }
-        case "bedrock": {
-          const profile = await ctx.ui.input("AWS profile:", "default");
-          const region = await ctx.ui.input("AWS region:", "us-east-1");
-          const model = await ctx.ui.input(
-            "Model:",
-            "amazon.titan-embed-text-v2:0"
-          );
-          configFile = {
-            dirs,
-            fileExtensions,
-            excludeDirs,
-            provider: {
-              type: "bedrock",
-              profile: profile || "default",
-              region: region || "us-east-1",
-              model: model || "amazon.titan-embed-text-v2:0",
-            },
-          };
-          break;
-        }
-        case "ollama": {
-          const url = await ctx.ui.input(
-            "Ollama URL:",
-            "http://localhost:11434"
-          );
-          const model = await ctx.ui.input("Model:", "nomic-embed-text");
-          configFile = {
-            dirs,
-            fileExtensions,
-            excludeDirs,
-            provider: {
-              type: "ollama",
-              url: url || "http://localhost:11434",
-              model: model || "nomic-embed-text",
-            },
-          };
-          break;
-        }
-      }
-
-      // Save and confirm
-      saveConfig(configFile!);
       ctx.ui.notify(
         `Config saved to ${getConfigPath()}. Run /reload to activate.`,
         "success"
@@ -221,20 +105,20 @@ export default function (pi: ExtensionAPI) {
   // Reindex command
   // ------------------------------------------------------------------
 
-  pi.registerCommand("knowledge-reindex", {
-    description: "Force full re-index of all configured knowledge directories",
+  pi.registerCommand("engrams-reindex", {
+    description: "Force full re-index of all engram documents",
     handler: async (_args, ctx) => {
       if (!index) {
         ctx.ui.notify(
-          "Not configured. Run /knowledge-search-setup first.",
+          "agent-engrams: index not initialized. Check Ollama connection.",
           "warning"
         );
         return;
       }
-      ctx.ui.notify("Re-indexing...", "info");
+      ctx.ui.notify("Re-indexing engrams...", "info");
       try {
         await index.rebuild();
-        ctx.ui.notify(`Re-indexed: ${index.size()} files`, "success");
+        ctx.ui.notify(`Re-indexed: ${index.size()} engrams`, "success");
       } catch (err: any) {
         ctx.ui.notify(`Re-index failed: ${err.message}`, "error");
       }
@@ -242,16 +126,135 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ------------------------------------------------------------------
-  // Search tool
+  // engrams_write tool
   // ------------------------------------------------------------------
 
   pi.registerTool({
-    name: "knowledge_search",
-    label: "Knowledge Search",
+    name: "engrams_write",
+    label: "Write Engram",
     description:
-      "Semantic search over local knowledge files. Returns the most relevant file excerpts for a natural language query. Use for finding past notes, investigations, decisions, documentation, and context. Prefer this over grep when you need conceptual or fuzzy matching rather than exact text.",
+      "Write a structured engram document to the agent memory store. Use this when you learn something non-obvious during a task — a debugging technique, an API quirk, a domain pattern, an architectural insight — that would be valuable to recall in future sessions.",
     promptGuidelines: [
-      'Use knowledge_search for conceptual queries (e.g. "how did we handle X", "what was decided about Y"). Use grep/read for exact text or known filenames.',
+      "Call engrams_write when you discover something non-obvious during a task that future agents (or your future self) should know.",
+      "Good engram candidates: debugging breakthroughs, API quirks, domain constraints, architectural decisions, performance findings, testing patterns.",
+      "Bad engram candidates: trivial facts, information already in documentation, one-time configuration values.",
+      "Set durability to 'permanent' for stable knowledge, 'workaround' for temporary fixes, 'hypothesis' for unverified insights.",
+      "Be specific in trigger and anti_trigger — vague conditions reduce retrieval quality.",
+    ],
+    parameters: Type.Object({
+      title: Type.String({ description: "Short descriptive title for the engram" }),
+      category: Type.Union(
+        [
+          Type.Literal("debugging"),
+          Type.Literal("api"),
+          Type.Literal("architecture"),
+          Type.Literal("tooling"),
+          Type.Literal("domain"),
+          Type.Literal("performance"),
+          Type.Literal("testing"),
+        ],
+        { description: "Primary knowledge category" }
+      ),
+      tags: Type.Array(Type.String(), {
+        description: "Comma-separated keywords for discoverability",
+      }),
+      durability: Type.Union(
+        [
+          Type.Literal("permanent"),
+          Type.Literal("workaround"),
+          Type.Literal("hypothesis"),
+        ],
+        {
+          description:
+            "How stable is this knowledge? permanent = verified and stable, workaround = temporary fix, hypothesis = unverified",
+        }
+      ),
+      agent: Type.String({
+        description: "Name of the agent authoring this engram",
+      }),
+      source: Type.String({
+        description:
+          "Ticket key, PR URL, or task description that triggered this learning",
+      }),
+      context: Type.String({
+        description: "What situation triggered this learning?",
+      }),
+      insight: Type.String({
+        description: "What was learned? What is the non-obvious part?",
+      }),
+      trigger: Type.String({
+        description:
+          "Specific conditions when this engram is relevant (for future retrieval)",
+      }),
+      anti_trigger: Type.String({
+        description:
+          "Conditions when this engram should NOT be applied",
+      }),
+      supersedes: Type.Optional(
+        Type.String({
+          description:
+            "Relative path to an older engram this replaces, or omit if none",
+        })
+      ),
+    }),
+    async execute(_toolCallId, params) {
+      if (!currentConfig) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "agent-engrams is not configured. Run /engrams-setup first.",
+            },
+          ],
+          details: {},
+        };
+      }
+
+      const markdown = renderEngram(params);
+      const date = new Date().toISOString().split("T")[0];
+      let filename = `${date}-${slugify(params.title)}.md`;
+      let filePath = path.join(currentConfig.engramsDir, filename);
+
+      let suffix = 1;
+      while (fs.existsSync(filePath)) {
+        filename = `${date}-${slugify(params.title)}-${suffix}.md`;
+        filePath = path.join(currentConfig.engramsDir, filename);
+        suffix++;
+      }
+
+      fs.mkdirSync(currentConfig.engramsDir, { recursive: true });
+      fs.writeFileSync(filePath, markdown, "utf-8");
+
+      const home = process.env.HOME || "";
+      const displayPath = filePath.replace(home, "~");
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Engram written: ${displayPath}\n\nTitle: ${params.title}\nCategory: ${params.category}\nDurability: ${params.durability}\nTags: ${params.tags.join(", ")}`,
+          },
+        ],
+        details: { path: filePath, filename },
+      };
+    },
+  });
+
+  // ------------------------------------------------------------------
+  // engrams_search tool
+  // ------------------------------------------------------------------
+
+  pi.registerTool({
+    name: "engrams_search",
+    label: "Search Engrams",
+    description:
+      "Semantic search over the agent engram memory store. Returns the most relevant engrams for a natural language query, with optional metadata filtering. Use to recall prior knowledge before starting a task.",
+    promptGuidelines: [
+      "Call engrams_search at the start of a task to recall relevant prior knowledge from the team's collective memory.",
+      'Use for conceptual queries: "how did we debug X", "what patterns work for Y", "known issues with Z".',
+      "Use metadata filters to narrow results: category, agent, durability, tags.",
+      "Pay attention to the durability field in results: hypothesis engrams may be unreliable, workaround engrams may be outdated.",
+      "Check the supersedes field — if an engram supersedes another, prefer the newer one.",
     ],
     parameters: Type.Object({
       query: Type.String({ description: "Natural language search query" }),
@@ -260,26 +263,58 @@ export default function (pi: ExtensionAPI) {
           description: "Max results to return (default 8, max 20)",
         })
       ),
+      category: Type.Optional(
+        Type.String({
+          description:
+            "Filter by category: debugging, api, architecture, tooling, domain, performance, testing",
+        })
+      ),
+      agent: Type.Optional(
+        Type.String({ description: "Filter by authoring agent name" })
+      ),
+      durability: Type.Optional(
+        Type.String({
+          description:
+            "Filter by durability: permanent, workaround, hypothesis",
+        })
+      ),
+      tags: Type.Optional(
+        Type.Array(Type.String(), {
+          description: "Filter by tags (match any)",
+        })
+      ),
     }),
-    async execute(toolCallId, params, signal) {
+    async execute(_toolCallId, params, signal) {
       if (!index || index.size() === 0) {
         const msg = !index
-          ? 'knowledge-search is not configured. The user can run /knowledge-search-setup to set it up.'
-          : "Index is empty — it may still be building. Try again in a moment.";
+          ? "agent-engrams: index not initialized. Check Ollama connection."
+          : "Engram index is empty — no engrams have been written yet.";
         return { content: [{ type: "text", text: msg }], details: {} };
       }
 
       const limit = Math.min(params.limit ?? 8, 20);
+      const filters: Record<string, unknown> = {};
+      if (params.category) filters.category = params.category;
+      if (params.agent) filters.agent = params.agent;
+      if (params.durability) filters.durability = params.durability;
+      if (params.tags && params.tags.length > 0) filters.tags = params.tags;
+
+      const hasFilters = Object.keys(filters).length > 0;
 
       try {
-        const results = await index.search(params.query, limit, signal);
+        const results = await index.search(
+          params.query,
+          limit,
+          hasFilters ? (filters as any) : undefined,
+          signal
+        );
 
         if (results.length === 0) {
           return {
             content: [
               {
                 type: "text",
-                text: `No relevant results found for: "${params.query}"`,
+                text: `No relevant engrams found for: "${params.query}"`,
               },
             ],
             details: {},
@@ -291,18 +326,29 @@ export default function (pi: ExtensionAPI) {
           .map((r, i) => {
             const displayPath = r.path.replace(home, "~");
             const score = (r.score * 100).toFixed(1);
-            return `### ${i + 1}. ${displayPath} (${score}% match)\n\n${r.excerpt}`;
+            const m = r.metadata;
+            const metaLine = [
+              m.category && `Category: ${m.category}`,
+              m.durability && `Durability: ${m.durability}`,
+              m.agent && `Agent: ${m.agent}`,
+              m.tags?.length && `Tags: ${m.tags.join(", ")}`,
+              m.supersedes && `Supersedes: ${m.supersedes}`,
+            ]
+              .filter(Boolean)
+              .join(" | ");
+
+            return `### ${i + 1}. ${displayPath} (${score}% match)\n${metaLine}\n\n${r.excerpt}`;
           })
           .join("\n\n---\n\n");
 
-        const header = `Found ${results.length} results for "${params.query}" (${index.size()} files indexed):\n\n`;
+        const header = `Found ${results.length} engrams for "${params.query}" (${index.size()} total indexed):\n\n`;
 
         return {
           content: [{ type: "text", text: header + output }],
           details: { resultCount: results.length, indexSize: index.size() },
         };
       } catch (err: any) {
-        throw new Error(`knowledge-search failed: ${err.message}`);
+        throw new Error(`engrams_search failed: ${err.message}`);
       }
     },
   });

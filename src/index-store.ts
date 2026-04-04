@@ -2,39 +2,41 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Config } from "./config";
 import type { Embedder } from "./embedder";
+import { parseFrontmatter, type EngramMetadata } from "./frontmatter";
 
 interface IndexEntry {
-  /** Relative path from its source directory root */
   relPath: string;
-  /** Which source directory this belongs to */
   sourceDir: string;
-  /** File mtime (ms) at time of indexing */
   mtime: number;
-  /** Embedding vector */
   vector: number[];
-  /** First ~2000 chars of content for excerpt display */
   excerpt: string;
+  metadata: EngramMetadata;
 }
 
 interface IndexData {
   version: number;
   dimensions: number;
-  entries: Record<string, IndexEntry>; // keyed by absolute path
+  entries: Record<string, IndexEntry>;
+}
+
+export interface SearchFilters {
+  category?: string;
+  agent?: string;
+  durability?: string;
+  tags?: string[];
 }
 
 export interface SearchResult {
-  /** Absolute file path */
   path: string;
-  /** Cosine similarity score (0-1) */
   score: number;
-  /** Content excerpt */
   excerpt: string;
+  metadata: EngramMetadata;
 }
 
-const INDEX_VERSION = 2;
+const INDEX_VERSION = 3;
 const EXCERPT_LENGTH = 2000;
 
-export class KnowledgeIndex {
+export class EngramIndex {
   private config: Config;
   private embedder: Embedder;
   private data: IndexData;
@@ -89,14 +91,10 @@ export class KnowledgeIndex {
     }, 5000);
   }
 
-  /**
-   * Scan all configured directories, find new/changed/removed files, update index.
-   */
   async sync(): Promise<{ added: number; updated: number; removed: number }> {
     const allFiles = this.scanAllFiles();
     const currentPaths = new Set(allFiles.map((f) => f.absPath));
 
-    // Remove entries for files that no longer exist
     const removedPaths: string[] = [];
     for (const absPath of Object.keys(this.data.entries)) {
       if (!currentPaths.has(absPath)) {
@@ -107,21 +105,21 @@ export class KnowledgeIndex {
       delete this.data.entries[p];
     }
 
-    // Find new or updated files
     const toEmbed: {
       absPath: string;
       relPath: string;
       sourceDir: string;
       mtime: number;
       content: string;
+      metadata: EngramMetadata;
     }[] = [];
 
     for (const file of allFiles) {
       const existing = this.data.entries[file.absPath];
       if (!existing || existing.mtime < file.mtime) {
-        const content = this.readFileContent(file.absPath);
-        if (content && content.trim().length > 20) {
-          toEmbed.push({ ...file, content });
+        const result = this.readAndParseFile(file.absPath);
+        if (result && result.content.trim().length > 20) {
+          toEmbed.push({ ...file, content: result.content, metadata: result.metadata });
         }
       }
     }
@@ -152,6 +150,7 @@ export class KnowledgeIndex {
             mtime: file.mtime,
             vector,
             excerpt: file.content.slice(0, EXCERPT_LENGTH),
+            metadata: file.metadata,
           };
           if (isNew) added++;
           else updated++;
@@ -175,13 +174,15 @@ export class KnowledgeIndex {
   async search(
     query: string,
     limit: number,
+    filters?: SearchFilters,
     signal?: AbortSignal
   ): Promise<SearchResult[]> {
     const queryVector = await this.embedder.embed(query, signal);
 
     const scored: { absPath: string; score: number }[] = [];
     for (const [absPath, entry] of Object.entries(this.data.entries)) {
-      if (!entry.vector) continue; // skip corrupted/null entries
+      if (!entry.vector) continue;
+      if (filters && !matchesFilters(entry.metadata, filters)) continue;
       const score = dotProduct(queryVector, entry.vector);
       scored.push({ absPath, score });
     }
@@ -195,12 +196,10 @@ export class KnowledgeIndex {
         path: s.absPath,
         score: s.score,
         excerpt: this.data.entries[s.absPath].excerpt,
+        metadata: this.data.entries[s.absPath].metadata,
       }));
   }
 
-  /**
-   * Update a single file in the index (called by watcher).
-   */
   async updateFile(absPath: string, sourceDir: string): Promise<void> {
     if (!fs.existsSync(absPath)) {
       this.removeFile(absPath);
@@ -211,27 +210,25 @@ export class KnowledgeIndex {
     if (this.shouldSkip(relPath, path.basename(absPath))) return;
 
     const stat = fs.statSync(absPath);
-    const content = this.readFileContent(absPath);
-    if (!content || content.trim().length <= 20) {
+    const result = this.readAndParseFile(absPath);
+    if (!result || result.content.trim().length <= 20) {
       this.removeFile(absPath);
       return;
     }
 
     const title = relPath.replace(/\.[^.]+$/, "").replace(/\//g, " > ");
-    const text = `Title: ${title}\n\n${content}`;
+    const text = `Title: ${title}\n\n${result.content}`;
     const vector = await this.embedder.embed(text);
 
-    if (!vector) {
-      // Embedding failed — don't store a null vector
-      return;
-    }
+    if (!vector) return;
 
     this.data.entries[absPath] = {
       relPath,
       sourceDir,
       mtime: stat.mtimeMs,
       vector,
-      excerpt: content.slice(0, EXCERPT_LENGTH),
+      excerpt: result.content.slice(0, EXCERPT_LENGTH),
+      metadata: result.metadata,
     };
     this.scheduleSave();
   }
@@ -260,9 +257,7 @@ export class KnowledgeIndex {
       mtime: number;
     }[] = [];
 
-    for (const dir of this.config.dirs) {
-      this.walkDir(dir, dir, results);
-    }
+    this.walkDir(this.config.engramsDir, this.config.engramsDir, results);
     return results;
   }
 
@@ -319,18 +314,39 @@ export class KnowledgeIndex {
     return false;
   }
 
-  private readFileContent(absPath: string): string | null {
+  /**
+   * Read a file and parse its frontmatter. Returns the full raw content
+   * (frontmatter included) for embedding, plus the parsed metadata.
+   */
+  private readAndParseFile(
+    absPath: string
+  ): { content: string; metadata: EngramMetadata } | null {
     try {
-      const content = fs.readFileSync(absPath, "utf-8");
-      // Strip YAML frontmatter if present (common in markdown)
-      return content.replace(/^---\n[\s\S]*?\n---\n?/, "");
+      const raw = fs.readFileSync(absPath, "utf-8");
+      const { metadata } = parseFrontmatter(raw);
+      return { content: raw, metadata };
     } catch {
       return null;
     }
   }
 }
 
-/** Dot product — works as cosine similarity when vectors are pre-normalized. */
+function matchesFilters(
+  metadata: EngramMetadata,
+  filters: SearchFilters
+): boolean {
+  if (filters.category && metadata.category !== filters.category) return false;
+  if (filters.agent && metadata.agent !== filters.agent) return false;
+  if (filters.durability && metadata.durability !== filters.durability)
+    return false;
+  if (filters.tags && filters.tags.length > 0) {
+    const entryTags = new Set(metadata.tags ?? []);
+    const hasAny = filters.tags.some((t) => entryTags.has(t));
+    if (!hasAny) return false;
+  }
+  return true;
+}
+
 function dotProduct(a: number[], b: number[]): number {
   let sum = 0;
   for (let i = 0; i < a.length; i++) {
