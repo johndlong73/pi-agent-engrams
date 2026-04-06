@@ -1,8 +1,8 @@
-import * as fs from "node:fs";
-import * as path from "node:path";
-import type { Config } from "./config";
-import type { Embedder } from "./embedder";
-import { parseFrontmatter, type EngramMetadata } from "./frontmatter";
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import type { Config } from './config';
+import type { Embedder } from './embedder';
+import { parseFrontmatter, type EngramMetadata } from './frontmatter';
 
 interface IndexEntry {
   relPath: string;
@@ -58,15 +58,12 @@ export class EngramIndex {
   }
 
   async load(): Promise<void> {
-    const indexFile = path.join(this.config.indexDir, "index.json");
+    const indexFile = path.join(this.config.indexDir, 'index.json');
     if (fs.existsSync(indexFile)) {
       try {
-        const raw = fs.readFileSync(indexFile, "utf-8");
+        const raw = fs.readFileSync(indexFile, 'utf-8');
         const parsed = JSON.parse(raw) as IndexData;
-        if (
-          parsed.version === INDEX_VERSION &&
-          parsed.dimensions === this.config.dimensions
-        ) {
+        if (parsed.version === INDEX_VERSION && parsed.dimensions === this.config.dimensions) {
           this.data = parsed;
         }
       } catch {
@@ -77,7 +74,7 @@ export class EngramIndex {
 
   private save(): void {
     fs.mkdirSync(this.config.indexDir, { recursive: true });
-    const indexFile = path.join(this.config.indexDir, "index.json");
+    const indexFile = path.join(this.config.indexDir, 'index.json');
     fs.writeFileSync(indexFile, JSON.stringify(this.data));
     this.dirty = false;
   }
@@ -93,7 +90,7 @@ export class EngramIndex {
 
   async sync(): Promise<{ added: number; updated: number; removed: number }> {
     const allFiles = this.scanAllFiles();
-    const currentPaths = new Set(allFiles.map((f) => f.absPath));
+    const currentPaths = new Set(allFiles.map(f => f.absPath));
 
     const removedPaths: string[] = [];
     for (const absPath of Object.keys(this.data.entries)) {
@@ -128,8 +125,8 @@ export class EngramIndex {
     let updated = 0;
 
     if (toEmbed.length > 0) {
-      const texts = toEmbed.map((f) => {
-        const title = f.relPath.replace(/\.[^.]+$/, "").replace(/\//g, " > ");
+      const texts = toEmbed.map(f => {
+        const title = f.relPath.replace(/\.[^.]+$/, '').replace(/\//g, ' > ');
         return `Title: ${title}\n\n${f.content}`;
       });
 
@@ -191,8 +188,8 @@ export class EngramIndex {
 
     return scored
       .slice(0, limit)
-      .filter((s) => s.score > 0.15)
-      .map((s) => ({
+      .filter(s => s.score > 0.15)
+      .map(s => ({
         path: s.absPath,
         score: s.score,
         excerpt: this.data.entries[s.absPath].excerpt,
@@ -216,7 +213,7 @@ export class EngramIndex {
       return;
     }
 
-    const title = relPath.replace(/\.[^.]+$/, "").replace(/\//g, " > ");
+    const title = relPath.replace(/\.[^.]+$/, '').replace(/\//g, ' > ');
     const text = `Title: ${title}\n\n${result.content}`;
     const vector = await this.embedder.embed(text);
 
@@ -257,7 +254,7 @@ export class EngramIndex {
       mtime: number;
     }[] = [];
 
-    this.walkDir(this.config.engramsDir, this.config.engramsDir, results);
+    this.walkDir(this.config.dir, this.config.dir, results);
     return results;
   }
 
@@ -282,16 +279,13 @@ export class EngramIndex {
       const absPath = path.join(currentDir, entry.name);
 
       if (entry.isDirectory()) {
-        if (
-          this.config.excludeDirs.includes(entry.name) ||
-          entry.name.startsWith(".")
-        ) {
+        if (entry.name.startsWith('.')) {
           continue;
         }
         this.walkDir(absPath, sourceDir, results);
       } else if (entry.isFile()) {
         const ext = path.extname(entry.name);
-        if (!this.config.fileExtensions.includes(ext)) continue;
+        if (ext !== '.md') continue;
         const relPath = path.relative(sourceDir, absPath);
         if (this.shouldSkip(relPath, entry.name)) continue;
         try {
@@ -307,7 +301,7 @@ export class EngramIndex {
   private shouldSkip(relPath: string, _basename: string): boolean {
     const parts = relPath.split(path.sep);
     for (const part of parts) {
-      if (this.config.excludeDirs.includes(part) || part.startsWith(".")) {
+      if (part.startsWith('.')) {
         return true;
       }
     }
@@ -318,11 +312,9 @@ export class EngramIndex {
    * Read a file and parse its frontmatter. Returns the full raw content
    * (frontmatter included) for embedding, plus the parsed metadata.
    */
-  private readAndParseFile(
-    absPath: string
-  ): { content: string; metadata: EngramMetadata } | null {
+  private readAndParseFile(absPath: string): { content: string; metadata: EngramMetadata } | null {
     try {
-      const raw = fs.readFileSync(absPath, "utf-8");
+      const raw = fs.readFileSync(absPath, 'utf-8');
       const { metadata } = parseFrontmatter(raw);
       return { content: raw, metadata };
     } catch {
@@ -331,17 +323,13 @@ export class EngramIndex {
   }
 }
 
-function matchesFilters(
-  metadata: EngramMetadata,
-  filters: SearchFilters
-): boolean {
+function matchesFilters(metadata: EngramMetadata, filters: SearchFilters): boolean {
   if (filters.category && metadata.category !== filters.category) return false;
   if (filters.agent && metadata.agent !== filters.agent) return false;
-  if (filters.durability && metadata.durability !== filters.durability)
-    return false;
+  if (filters.durability && metadata.durability !== filters.durability) return false;
   if (filters.tags && filters.tags.length > 0) {
     const entryTags = new Set(metadata.tags ?? []);
-    const hasAny = filters.tags.some((t) => entryTags.has(t));
+    const hasAny = filters.tags.some(t => entryTags.has(t));
     if (!hasAny) return false;
   }
   return true;

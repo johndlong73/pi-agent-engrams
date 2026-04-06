@@ -1,7 +1,7 @@
-import * as fs from "node:fs";
-import * as path from "node:path";
-import type { Config } from "./config";
-import type { EngramIndex } from "./index-store";
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import type { Config } from './config';
+import type { EngramIndex } from './index-store';
 
 /**
  * Watches the engrams directory for file changes and updates the index in real-time.
@@ -20,43 +20,33 @@ export class FileWatcher {
   }
 
   start(): void {
-    const dir = this.config.engramsDir;
+    const dir = this.config.dir;
     try {
-      this.watcher = fs.watch(
-        dir,
-        { recursive: true },
-        (_eventType, filename) => {
-          if (!filename) return;
-          const relPath = filename.replace(/\\/g, "/");
+      this.watcher = fs.watch(dir, { recursive: true }, (_eventType, filename) => {
+        if (!filename) return;
+        const relPath = filename.replace(/\\/g, '/');
 
-          const ext = path.extname(relPath);
-          if (!this.config.fileExtensions.includes(ext)) return;
+        const ext = path.extname(relPath);
+        if (ext !== '.md') return;
 
-          const parts = relPath.split("/");
-          for (const part of parts) {
-            if (
-              this.config.excludeDirs.includes(part) ||
-              part.startsWith(".")
-            ) {
-              return;
-            }
+        const parts = relPath.split('/');
+        for (const part of parts) {
+          if (part.startsWith('.')) {
+            return;
           }
-
-          const absPath = path.join(dir, relPath);
-          this.debounce(absPath, dir);
         }
-      );
 
-      this.watcher.on("error", (err: NodeJS.ErrnoException) => {
-        if (err.code === "EACCES" || err.code === "ENOENT") return;
-        console.error(
-          `agent-engrams: watcher error for ${dir}: ${err.message}`
-        );
+        const absPath = path.join(dir, relPath);
+        this.debounce(absPath, dir);
       });
-    } catch (err: any) {
-      console.error(
-        `agent-engrams: watcher failed for ${dir}: ${err.message}`
-      );
+
+      this.watcher.on('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EACCES' || err.code === 'ENOENT') return;
+        console.error(`agent-engrams: watcher error for ${dir}: ${err.message}`);
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`agent-engrams: watcher failed for ${dir}: ${msg}`);
     }
   }
 
@@ -83,10 +73,9 @@ export class FileWatcher {
           } else {
             this.index.removeFile(absPath);
           }
-        } catch (err: any) {
-          console.error(
-            `agent-engrams: watcher update failed for ${absPath}: ${err.message}`
-          );
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`agent-engrams: watcher update failed for ${absPath}: ${msg}`);
         }
       }, this.DEBOUNCE_MS)
     );

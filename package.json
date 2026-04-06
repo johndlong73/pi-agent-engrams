@@ -1,21 +1,47 @@
 {
   "name": "pi-agent-engrams",
   "version": "0.1.0",
-  "description": "Agent memory system for pi. Writes structured engram documents, indexes them with vector embeddings, and exposes semantic search with metadata filtering.",
-  "keywords": ["pi-package"],
+  "type": "module",
+  "description": "Agent self-improvement memory system for pi. Agents write structured engram documents when they learn something valuable, then recall them before starting new tasks.",
+  "keywords": [
+    "pi-package"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/samfoy/pi-agent-engrams"
+    "url": "https://github.com/johndlong73/pi-agent-engrams"
   },
   "pi": {
-    "extensions": ["./src/index.ts"]
-  },
-  "dependencies": {
-    "yaml": "^2.7.1"
+    "extensions": [
+      "./src/index.ts"
+    ]
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
     "@sinclair/typebox": "*"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "format": "prettier --check src",
+    "format:fix": "prettier --write src"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@eslint/markdown": "^8.0.1",
+    "@types/node": "^22.10.0",
+    "@typescript-eslint/eslint-plugin": "^8.58.0",
+    "@typescript-eslint/parser": "^8.58.0",
+    "eslint": "^10.2.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.5",
+    "globals": "^17.4.0",
+    "prettier": "^3.8.1",
+    "typescript": "~6.0.0"
+  },
+  "optionalDependencies": {
+    "@aws-sdk/client-bedrock-runtime": "3.750.0",
+    "@aws-sdk/credential-providers": "3.750.0"
   }
 }
