@@ -15,6 +15,12 @@ export interface Config {
   provider: ProviderConfig;
   /** Where to store the index */
   indexDir: string;
+  /** Minimum similarity score for search results (0.0 to 1.0, default 0.40) */
+  minSearchScore?: number;
+  /** Enable additional engram debug logging via stderr (default false) */
+  enableLogging?: boolean;
+  /** Coarse log level override (default "info") */
+  logLevel?: 'debug' | 'info' | 'warn' | 'error';
 }
 
 export type ProviderConfig =
@@ -30,6 +36,9 @@ export interface ConfigFile {
     | { type: 'openai'; apiKey?: string; model?: string; baseUrl?: string }
     | { type: 'bedrock'; profile?: string; region?: string; model?: string }
     | { type: 'ollama'; url?: string; model?: string };
+  minSearchScore?: number;
+  enableLogging?: boolean;
+  logLevel?: 'debug' | 'info' | 'warn' | 'error';
 }
 
 /** Default when no model is set (suited to local OpenAI-compatible servers such as omlx). */
@@ -149,6 +158,9 @@ export function loadConfig(): Config | null {
     dimensions,
     provider,
     indexDir,
+    minSearchScore: file?.minSearchScore,
+    enableLogging: file?.enableLogging,
+    logLevel: file?.logLevel,
   };
 }
 

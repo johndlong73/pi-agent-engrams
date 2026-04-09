@@ -15,7 +15,7 @@ import {
   type ConfigFile,
 } from "./config";
 import { createEmbedder } from "./embedder";
-import { renderEngram, slugify } from "./frontmatter";
+import { renderEngram, slugify, normalizeScope } from "./frontmatter";
 import { EngramIndex, type SearchFilters, type SearchResult } from "./index-store";
 import { FileWatcher } from "./watcher";
 
@@ -43,7 +43,11 @@ const engramsWriteParametersSchema = Type.Object({
     { description: "Primary knowledge category" }
   ),
   tags: Type.Array(Type.String(), {
-    description: "Comma-separated keywords for discoverability",
+    description: "Keywords for discoverability",
+  }),
+  scope: Type.String({
+    description:
+      "How broadly applicable is this knowledge? Preferred values: 'universal' (any codebase), 'language' (specific to a programming language), 'framework' (specific to a framework/library), 'project' (specific to one project). Prefer universal or language scope. Avoid project scope.",
   }),
   durability: Type.Union(
     [
@@ -112,6 +116,11 @@ const engramsSearchParametersSchema = Type.Object({
       description: "Filter by tags (match any)",
     })
   ),
+  scope: Type.Optional(
+    Type.String({
+      description: "Filter by scope: universal, language, framework, project",
+    })
+  ),
 });
 
 type EngramsWriteParamsValidated = Static<typeof engramsWriteParametersSchema>;
@@ -121,6 +130,19 @@ export default function (pi: ExtensionAPI) {
   let index: EngramIndex | null = null;
   let watcher: FileWatcher | null = null;
   let currentConfig: Config | null = null;
+
+  const LOG_LEVELS: Record<string, number> = { debug: 0, info: 1, warn: 2, error: 3 };
+
+  function emitEngramLog(
+    level: 'debug' | 'info' | 'warn' | 'error',
+    component: string,
+    data: Record<string, unknown>
+  ) {
+    if (!currentConfig?.enableLogging) return;
+    const threshold = LOG_LEVELS[currentConfig.logLevel ?? 'info'];
+    if (LOG_LEVELS[level] < threshold) return;
+    console.error(JSON.stringify({ extension: 'agent-engrams', level, component, ...data }));
+  }
 
   // ------------------------------------------------------------------
   // Lifecycle
@@ -152,32 +174,27 @@ export default function (pi: ExtensionAPI) {
   // System prompt injection for self-improvement flywheel
   // ------------------------------------------------------------------
 
-  pi.on("before_agent_start", async (event, ctx) => {
-    // Only inject if we have a working index
-    if (!index || index.size() === 0) {
-      return;
-    }
-
+  pi.on("before_agent_start", async (event, _ctx) => {
     const flywheelPrompt = `
 ## Self-Improvement Flywheel
 
-You are part of a self-improving agent team. The team learns and improves through a flywheel effect:
+You are part of a knowledge-sharing agent network. Agents learn collectively through engrams — structured documents capturing transferable engineering knowledge.
 
-1. **WRITE** - When you learn something valuable during a task, write it as a structured engram using \`engrams_write\`. Each engram compounds the team's collective intelligence.
+### RECALL (do this first)
+- Search the engram store with \`engrams_search\` at the start of complex tasks
+- Use specific technical queries: "JWT token validation edge cases" not "authentication"
 
-2. **RECALL** - At the START of any new task, search the engram store using \`engrams_search\` to recall relevant prior knowledge. This helps you avoid rediscovering what others have already learned.
+### WRITE (do this when you discover something transferable)
+- Ask: **would this help an agent on a completely different project?** If no, don't write it.
+- Good engrams: debugging techniques, API quirks, language gotchas, architectural patterns, performance findings
+- Bad engrams: project file paths, database schemas, config values, obvious best practices
+- Set scope: prefer "universal" or "language" over "framework" or "project"
+- Be specific in trigger/anti_trigger — describe the GENERAL situation, not your current project
 
-3. **IMPROVE** - Incorporate relevant engrams into your reasoning before proceeding with the task.
-
-**When to write engrams:** debugging breakthroughs, API quirks, domain constraints, architectural decisions, performance findings, testing patterns, integration patterns, deployment gotchas.
-
-**When NOT to write engrams:** trivial facts, one-time configuration values, obvious best practices.
-
-**Durability:** \`permanent\` (stable knowledge), \`workaround\` (temporary), \`hypothesis\` (unverified).
-
-**Recall:** Search at START of every task, use specific queries, filter by durability, check supersedes field.
-
-The more engrams written, the better-informed your decisions will be. This is how the team learns and improves over time.
+### Quality bar
+- Every engram should teach something **non-obvious and transferable**
+- If you're unsure whether to write one, don't
+- Fewer high-quality engrams > many low-quality ones
 `.trim();
 
     return {
@@ -207,6 +224,13 @@ The more engrams written, the better-informed your decisions will be. This is ho
       } else {
         const { added, updated, removed } = syncResult;
         const changes = added + updated + removed;
+        emitEngramLog('info', 'index', {
+          event: 'sync_completed',
+          added,
+          updated,
+          removed,
+          totalSize: index.size(),
+        });
         if (changes > 0) {
           ctx.ui.setStatus(
             "agent-engrams",
@@ -329,6 +353,62 @@ The more engrams written, the better-informed your decisions will be. This is ho
   });
 
   // ------------------------------------------------------------------
+  // Seed command
+  // ------------------------------------------------------------------
+
+  pi.registerCommand("engrams-seed", {
+    description: "Copy bundled seed engrams to the engram store (idempotent)",
+    handler: async (_args, ctx) => {
+      if (!currentConfig) {
+        ctx.ui.notify("agent-engrams: not configured. Run /engrams-setup first.", "warning");
+        return;
+      }
+
+      const seedDir = path.resolve(
+        path.dirname(new URL(import.meta.url).pathname),
+        "..",
+        "seeds"
+      );
+
+      if (!fs.existsSync(seedDir)) {
+        ctx.ui.notify(`Seed directory not found: ${seedDir}`, "error");
+        return;
+      }
+
+      const seedFiles = fs.readdirSync(seedDir).filter(f => f.endsWith(".md"));
+      if (seedFiles.length === 0) {
+        ctx.ui.notify("No seed files found.", "info");
+        return;
+      }
+
+      const today = new Date().toISOString().split("T")[0];
+      let copied = 0;
+      let skipped = 0;
+
+      fs.mkdirSync(currentConfig.dir, { recursive: true });
+
+      for (const file of seedFiles) {
+        const dest = path.join(currentConfig.dir, file);
+        if (fs.existsSync(dest)) {
+          skipped++;
+          continue;
+        }
+        let content = fs.readFileSync(path.join(seedDir, file), "utf-8");
+        content = content.replace(/^Date: SEED$/m, `Date: ${today}`);
+        fs.writeFileSync(dest, content, "utf-8");
+        copied++;
+      }
+
+      ctx.ui.notify(
+        `Seeds: ${copied} copied, ${skipped} already present. Run /engrams-reindex to index them.`,
+        "info"
+      );
+
+      emitEngramLog("info", "seed", { event: "seed_completed", copied, skipped });
+    },
+  });
+
+  // ------------------------------------------------------------------
   // engrams_write tool
   // ------------------------------------------------------------------
 
@@ -337,16 +417,19 @@ The more engrams written, the better-informed your decisions will be. This is ho
     label: "Write Engram",
     promptSnippet: "Write structured engrams to capture valuable knowledge for future agents",
     description:
-      "Write a structured engram document to the agent memory store. This is the WRITE phase of the self-improvement flywheel: when you learn something valuable during a task — a debugging technique, an API quirk, a domain pattern, an architectural insight — write it down so future agents (including your future self) can recall it. Each engram compounds the team's collective intelligence.",
+      "Write a structured engram to the shared knowledge store. Engrams capture TRANSFERABLE engineering knowledge — debugging techniques, API quirks, architectural patterns, performance insights — that help agents across ANY project. Do NOT use this for project-specific facts like file paths, database schemas, or configuration values. Ask yourself: would this help someone on a completely different codebase? If not, don't write it.",
     promptGuidelines: [
-      "Call engrams_write when you discover something non-obvious during a task that future agents (or your future self) should know.",
-      "Good engram candidates: debugging breakthroughs, API quirks, domain constraints, architectural decisions, performance findings, testing patterns, integration patterns, deployment gotchas.",
-      "Bad engram candidates: trivial facts, information already in documentation, one-time configuration values, obvious best practices.",
-      "Set durability to 'permanent' for stable knowledge (architectural constraints, stable APIs), 'workaround' for temporary fixes (likely to be superseded), 'hypothesis' for unverified insights (needs confirmation).",
-      "Be specific in trigger and anti_trigger — vague conditions reduce retrieval quality. Include concrete examples when possible.",
-      "If this engram replaces an older one, set the supersedes field to point to the old engram (creates an invalidation chain).",
-      "Example GOOD engram title: 'API quirk: X returns Y instead of Z. Workaround: A'.",
-      "Example BAD engram title: 'The code had a bug that was fixed'.",
+      "Before writing an engram, ask: would this help an agent working on a COMPLETELY DIFFERENT project? If not, do not write it.",
+      "Write about PATTERNS and PRINCIPLES, not project-specific facts. Bad: 'The users table PK is a UUID'. Good: 'PostgreSQL UUID v7 columns are sortable by creation time unlike v4 — prefer for cursor pagination'.",
+      "Bad: 'The API base URL is in src/config/api.ts' — project configuration, not transferable knowledge.",
+      "Bad: 'The auth middleware is at src/middleware/auth.ts' — file path, not a pattern.",
+      "Good: 'Express middleware execution order is declaration order, not alphabetical — auth must be registered before route handlers'.",
+      "Good: 'API quirk: OpenAI streaming responses include [DONE] as a non-JSON line — always check before JSON.parse'.",
+      "Good: 'TypeScript strict mode catches config import errors at compile time that are silent runtime failures in loose mode'.",
+      "Set scope to 'universal' when possible. Only use 'project' scope if specifically asked to document project-specific knowledge.",
+      "Set durability to 'permanent' for verified stable knowledge, 'workaround' for temporary fixes, 'hypothesis' for unverified insights.",
+      "Trigger and anti_trigger must describe GENERAL situations, not project-specific contexts. Bad trigger: 'When working on the auth module in project X'. Good trigger: 'When JWT authentication fails silently with no error message'.",
+      "If this engram replaces an older one, set supersedes to point to the old engram's path.",
     ],
     // Cast: pi-coding-agent's TSchema can resolve to a different TypeBox build than this package (CJS/ESM).
     parameters: engramsWriteParametersSchema as any,
@@ -370,7 +453,8 @@ The more engrams written, the better-informed your decisions will be. This is ho
         };
       }
 
-      const markdown = renderEngram(p);
+      const writeParams = { ...p, scope: normalizeScope(p.scope) };
+      const markdown = renderEngram(writeParams);
       const date = new Date().toISOString().split("T")[0];
       let filename = `${date}-${slugify(p.title)}.md`;
       let filePath = path.join(currentConfig.dir, filename);
@@ -385,6 +469,15 @@ The more engrams written, the better-informed your decisions will be. This is ho
       fs.mkdirSync(currentConfig.dir, { recursive: true });
       fs.writeFileSync(filePath, markdown, "utf-8");
 
+      emitEngramLog('info', 'write', {
+        event: 'engram_written',
+        title: p.title,
+        category: p.category,
+        scope: writeParams.scope,
+        durability: p.durability,
+        path: filePath,
+      });
+
       const home = process.env.HOME || "";
       const displayPath = filePath.replace(home, "~");
 
@@ -392,7 +485,7 @@ The more engrams written, the better-informed your decisions will be. This is ho
         content: [
           {
             type: "text",
-            text: `Engram written: ${displayPath}\n\nTitle: ${p.title}\nCategory: ${p.category}\nDurability: ${p.durability}\nTags: ${p.tags.join(", ")}`,
+            text: `Engram written: ${displayPath}\n\nTitle: ${p.title}\nCategory: ${p.category}\nScope: ${writeParams.scope}\nDurability: ${p.durability}\nTags: ${p.tags.join(", ")}`,
           },
         ],
         details: { path: filePath, filename },
@@ -415,6 +508,7 @@ The more engrams written, the better-informed your decisions will be. This is ho
       "Search for: 'how did we debug X', 'what patterns work for Y', 'known issues with Z', 'best practices for W'.",
       "If you skip this step, you risk rediscovering problems others already solved.",
       "Use specific queries - 'debug' returns too many results, 'debug X API timeout' is better.",
+      "Filter by scope to control result specificity: 'universal' for broadly applicable knowledge, 'language' for language-specific patterns, 'framework' for library/framework-specific insights. Omit scope to search all.",
       "Filter by durability: 'permanent' for stable knowledge, avoid 'workaround' or 'hypothesis' unless needed.",
       "Pay attention to the durability field: hypothesis engrams may be unreliable, workaround engrams may be outdated.",
       "Check the supersedes field — if an engram supersedes another, prefer the newer one (invalidation chain).",
@@ -443,8 +537,16 @@ The more engrams written, the better-informed your decisions will be. This is ho
       if (p.agent) filters.agent = p.agent;
       if (p.durability) filters.durability = p.durability;
       if (p.tags && p.tags.length > 0) filters.tags = p.tags;
+      if (p.scope) filters.scope = normalizeScope(p.scope);
 
       const hasFilters = Object.keys(filters).length > 0;
+
+      emitEngramLog('info', 'search', {
+        event: 'tool_called',
+        query: p.query,
+        limit,
+        filters: hasFilters ? filters : undefined,
+      });
 
       try {
         const results = await index.search(
@@ -453,6 +555,14 @@ The more engrams written, the better-informed your decisions will be. This is ho
           hasFilters ? filters : undefined,
           signal
         );
+
+        emitEngramLog('info', 'search', {
+          event: 'results_returned',
+          query: p.query,
+          resultCount: results.length,
+          indexSize: index.size(),
+          topScore: results[0]?.score,
+        });
 
         if (results.length === 0) {
           return {
@@ -474,6 +584,7 @@ The more engrams written, the better-informed your decisions will be. This is ho
             const m = r.metadata;
             const metaLine = [
               m.category && `Category: ${m.category}`,
+              m.scope && `Scope: ${m.scope}`,
               m.durability && `Durability: ${m.durability}`,
               m.agent && `Agent: ${m.agent}`,
               m.tags?.length && `Tags: ${m.tags.join(", ")}`,

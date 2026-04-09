@@ -4,6 +4,7 @@ export interface EngramMetadata {
   category?: string;
   tags?: string[];
   durability?: string;
+  scope?: string;
   agent?: string;
   date?: string;
   source?: string;
@@ -17,6 +18,7 @@ export interface EngramWriteParams {
   category: string;
   tags: string[];
   durability: string;
+  scope: string;
   agent: string;
   source: string;
   context: string;
@@ -27,6 +29,26 @@ export interface EngramWriteParams {
 }
 
 const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n?/;
+
+const CANONICAL_SCOPES: Record<string, string> = {
+  universal: 'universal',
+  general: 'universal',
+  global: 'universal',
+  broad: 'universal',
+  language: 'language',
+  lang: 'language',
+  framework: 'framework',
+  library: 'framework',
+  lib: 'framework',
+  project: 'project',
+  repo: 'project',
+  codebase: 'project',
+};
+
+export function normalizeScope(raw: string): string {
+  const key = raw.trim().toLowerCase();
+  return CANONICAL_SCOPES[key] ?? 'universal';
+}
 
 /**
  * Extract YAML frontmatter and body from a raw markdown string.
@@ -57,6 +79,7 @@ export function parseFrontmatter(raw: string): {
       .filter(Boolean);
   }
   if (typeof parsed.Durability === 'string') metadata.durability = parsed.Durability.toLowerCase();
+  if (typeof parsed.Scope === 'string') metadata.scope = normalizeScope(parsed.Scope);
   if (typeof parsed.Agent === 'string') metadata.agent = parsed.Agent;
   if (typeof parsed.Date === 'string') metadata.date = parsed.Date;
   if (typeof parsed.Source === 'string') metadata.source = parsed.Source;
@@ -81,6 +104,7 @@ export function renderEngram(params: EngramWriteParams): string {
 Category: ${params.category}
 Tags: ${params.tags.join(', ')}
 Durability: ${params.durability}
+Scope: ${params.scope}
 Agent: ${params.agent}
 Date: ${date}
 Source: ${params.source}

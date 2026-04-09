@@ -1,8 +1,19 @@
 # pi-agent-engrams
 
-Agent self-improvement memory system for [pi](https://github.com/badlogic/pi). When an agent learns something valuable during a task — a debugging technique, an API quirk, a domain pattern — it writes a structured **engram** document. Later, any agent can semantically search the engram store to recall relevant knowledge before starting work.
+Agent knowledge-sharing system for [pi](https://github.com/badlogic/pi). When an agent discovers something transferable during a task — a debugging technique, an API quirk, an architectural pattern — it writes a structured **engram** document. Later, any agent can semantically search the engram store to recall relevant knowledge before starting work.
 
-This is the **self-improvement flywheel**: the more engrams that are written, the better-informed future agents become from the start. Each engram compounds the team's collective intelligence.
+The key constraint: engrams must be **transferable across projects**. Project-specific facts (file paths, schemas, config values) pollute search results and erode trust. The system steers agents toward patterns, principles, and non-obvious insights that help any agent on any codebase.
+
+## Table of Contents
+
+- [Install](#install)
+- [Setup](#setup)
+- [How it works](#how-it-works)
+- [Tools](#tools)
+- [Commands](#commands)
+- [Configuration reference](#configuration-reference)
+- [Performance](#performance)
+- [License](#license)
 
 ## Install
 
@@ -25,12 +36,14 @@ Run the interactive setup command inside pi:
 ```
 
 This walks you through:
-1. **Engram directory** - Where engram markdown files are stored (default: `~/.pi/agent/engrams/docs`)
+1. **Engram directory** — Where engram markdown files are stored (default: `~/.pi/agent/engrams/docs`)
 2. **Embedding provider** — OpenAI, AWS Bedrock, or local Ollama
 3. **Embedding model** (default: `Qwen3-Embedding-0.6B-4bit-DWQ`)
 4. **Embedding dimensions** (default: `512`)
 
 Config is saved to `~/.pi/agent-engrams.json`. Run `/reload` to activate.
+
+After setup, run `/engrams-seed` to bootstrap the store with meta-engrams that teach agents how to use the system effectively.
 
 ### Config file
 
@@ -133,59 +146,78 @@ Every config field can be overridden via environment variables. This is useful f
 
 1. On session start, loads the index from disk and incrementally syncs — only re-embeds new or modified files
 2. Starts a file watcher for real-time updates (debounced, 2s)
-3. Registers `engrams_write` and `engrams_search` tools the LLM can call
-4. Returns ranked results with file paths, relevance scores, and content excerpts
+3. Injects a flywheel system prompt on every agent turn, guiding agents to recall before acting and write only transferable knowledge
+4. Registers `engrams_write` and `engrams_search` tools the LLM can call
+5. Returns ranked results with file paths, relevance scores, scope, and content excerpts
 
 The index is stored at `~/.pi/agent-engrams/index.json`.
 
-### Self-improvement flywheel
+### Knowledge flywheel
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    THE FLYWHEEL                                 │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  1. WRITE: Agent learns something valuable                    │
-│     ↓                                                           │
-│  2. INDEX: Engram is embedded and added to vector store       │
-│     ↓                                                           │
-│  3. RECALL: Next agent searches for relevant knowledge        │
-│     ↓                                                           │
-│  4. IMPROVE: Agent makes better decisions from prior insights │
-│     ↓                                                           │
-│  (Loop back to step 1 - knowledge compounds over time)        │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+  W["WRITE<br/>Agent discovers<br/>transferable knowledge"] --> I["INDEX<br/>Engram is embedded<br/>and stored"]
+  I --> R["RECALL<br/>Next agent searches<br/>for relevant knowledge"]
+  R --> A["APPLY<br/>Agent makes better<br/>decisions from insights"]
+  A --> W
+
+  style W fill:#1190FF,stroke:#111,color:#fff
+  style I fill:#1EAA52,stroke:#111,color:#fff
+  style R fill:#8755FF,stroke:#111,color:#fff
+  style A fill:#FF5000,stroke:#111,color:#fff
 ```
 
-**Key insight:** The more tasks agents complete, the more engrams accumulate, and the better-informed future agents become from the start. This creates a compounding effect where the team's collective intelligence grows with each session.
+The flywheel only works if engram quality stays high. Low-quality writes (project-specific junk, obvious facts) pollute search results and erode trust. The system uses scope classification, a configurable similarity threshold (default 0.40), and a project-scope score penalty to maintain signal-to-noise ratio.
+
+### Scope and quality
+
+Every engram has a **scope** that classifies its generality:
+
+| Scope | Meaning | Example |
+|-------|---------|---------|
+| `universal` | Applies to any codebase | "Default mutable arguments in Python are shared across calls" |
+| `language` | Specific to a programming language | "TypeScript strict mode catches config import errors at compile time" |
+| `framework` | Specific to a framework/library | "Express middleware execution order is declaration order, not alphabetical" |
+| `project` | Specific to one project | Deprioritized in search results (25% score penalty) |
+
+Agents are guided to prefer `universal` or `language` scope. The scope field accepts free-form text and normalizes common synonyms server-side (e.g. `"lib"` → `"framework"`, `"repo"` → `"project"`, `"global"` → `"universal"`), so tool calls never fail due to scope value mismatches.
 
 ## Tools
 
 ### `engrams_write`
 
-**The WRITE phase of the self-improvement flywheel.** Creates a new engram document from structured parameters. The agent provides title, category, tags, durability, context, insight, trigger/anti-trigger, and the tool renders and saves the markdown file.
+Captures transferable engineering knowledge as a structured engram. Agents are guided to ask: *would this help an agent on a completely different project?*
 
-**When to use:** Call this when you discover something non-obvious during a task that future agents (or your future self) should know. This is how the team learns and improves over time.
-
-**Good candidates:** debugging breakthroughs, API quirks, domain constraints, architectural decisions, performance findings, testing patterns, integration patterns, deployment gotchas.
-
-**Bad candidates:** trivial facts, information already in documentation, one-time configuration values, obvious best practices.
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `title` | string | Short descriptive title |
+| `category` | enum | `debugging`, `api`, `architecture`, `tooling`, `domain`, `performance`, `testing` |
+| `tags` | string[] | Keywords for discoverability |
+| `scope` | string | Generality: `universal`, `language`, `framework`, `project` |
+| `durability` | enum | `permanent` (stable), `workaround` (temporary), `hypothesis` (unverified) |
+| `agent` | string | Authoring agent name |
+| `source` | string | Ticket, PR, or task that triggered this learning |
+| `context` | string | What situation triggered this learning |
+| `insight` | string | What was learned (the non-obvious part) |
+| `trigger` | string | When this engram is relevant |
+| `anti_trigger` | string | When this engram should NOT be applied |
+| `supersedes` | string? | Path to an older engram this replaces |
 
 ### `engrams_search`
 
-**The RECALL phase of the self-improvement flywheel.** Semantic search with optional metadata filters:
+Semantic search over the engram store with optional metadata filters:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `query` | string | Natural language search query |
-| `limit` | number | Max results (default 8, max 20) |
-| `category` | string | Filter by category |
-| `agent` | string | Filter by authoring agent |
-| `durability` | string | Filter by durability level |
-| `tags` | string[] | Filter by tags (match any) |
+| `limit` | number? | Max results (default 8, max 20) |
+| `category` | string? | Filter by category |
+| `agent` | string? | Filter by authoring agent |
+| `durability` | string? | Filter by durability level |
+| `tags` | string[]? | Filter by tags (match any) |
+| `scope` | string? | Filter by scope: `universal`, `language`, `framework`, `project` |
 
-**When to use:** Call this at the START of a task to recall relevant prior knowledge from the team's collective memory. This helps you avoid rediscovering what others have already learned.
+Results below the minimum similarity threshold (default 0.40, configurable) are filtered out before the limit is applied, so you always get the best matches above the quality floor.
 
 ## Commands
 
@@ -193,6 +225,28 @@ The index is stored at `~/.pi/agent-engrams/index.json`.
 |---------|-------------|
 | `/engrams-setup` | Interactive setup wizard |
 | `/engrams-reindex` | Force a full re-index |
+| `/engrams-seed` | Copy bundled seed engrams to the store (idempotent) |
+
+## Configuration reference
+
+All fields beyond provider config are optional:
+
+```json
+{
+  "dir": "~/.pi/agent/engrams/docs",
+  "dimensions": 512,
+  "provider": { "type": "openai" },
+  "minSearchScore": 0.40,
+  "enableLogging": false,
+  "logLevel": "info"
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `minSearchScore` | `0.40` | Minimum similarity score for search results (0.0–1.0). Results below this threshold are dropped entirely. |
+| `enableLogging` | `false` | Emit structured JSON diagnostic logs to stderr. |
+| `logLevel` | `"info"` | Minimum log level when logging is enabled: `debug`, `info`, `warn`, `error`. |
 
 ## Performance
 

@@ -24,6 +24,7 @@ export interface SearchFilters {
   agent?: string;
   durability?: string;
   tags?: string[];
+  scope?: string;
 }
 
 export interface SearchResult {
@@ -35,6 +36,9 @@ export interface SearchResult {
 
 const INDEX_VERSION = 3;
 const EXCERPT_LENGTH = 2000;
+
+/** Default minimum similarity score for search results (0.0 to 1.0) */
+export const DEFAULT_MIN_SEARCH_SCORE = 0.40;
 
 export class EngramIndex {
   private config: Config;
@@ -175,20 +179,26 @@ export class EngramIndex {
     signal?: AbortSignal
   ): Promise<SearchResult[]> {
     const queryVector = await this.embedder.embed(query, signal);
+    const minScore = this.config.minSearchScore ?? DEFAULT_MIN_SEARCH_SCORE;
 
     const scored: { absPath: string; score: number }[] = [];
     for (const [absPath, entry] of Object.entries(this.data.entries)) {
       if (!entry.vector) continue;
       if (filters && !matchesFilters(entry.metadata, filters)) continue;
-      const score = dotProduct(queryVector, entry.vector);
+      let score = dotProduct(queryVector, entry.vector);
+
+      if (entry.metadata.scope === 'project' && filters?.scope !== 'project') {
+        score *= 0.75;
+      }
+
       scored.push({ absPath, score });
     }
 
     scored.sort((a, b) => b.score - a.score);
 
     return scored
+      .filter(s => s.score > minScore)
       .slice(0, limit)
-      .filter(s => s.score > 0.15)
       .map(s => ({
         path: s.absPath,
         score: s.score,
@@ -327,6 +337,7 @@ function matchesFilters(metadata: EngramMetadata, filters: SearchFilters): boole
   if (filters.category && metadata.category !== filters.category) return false;
   if (filters.agent && metadata.agent !== filters.agent) return false;
   if (filters.durability && metadata.durability !== filters.durability) return false;
+  if (filters.scope && metadata.scope !== filters.scope) return false;
   if (filters.tags && filters.tags.length > 0) {
     const entryTags = new Set(metadata.tags ?? []);
     const hasAny = filters.tags.some(t => entryTags.has(t));
