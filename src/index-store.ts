@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import type { Config } from './config';
 import type { Embedder } from './embedder';
 import { parseFrontmatter, type EngramMetadata } from './frontmatter';
+import type { buildEmbeddingIndexIdentity } from './index-identity';
 
 interface IndexEntry {
   relPath: string;
@@ -14,8 +15,10 @@ interface IndexEntry {
 }
 
 interface IndexData {
-  version: number;
+  version?: number;
   dimensions: number;
+  embeddingModelId: string;
+  providerFingerprint: string;
   entries: Record<string, IndexEntry>;
 }
 
@@ -38,21 +41,29 @@ const INDEX_VERSION = 3;
 const EXCERPT_LENGTH = 2000;
 
 /** Default minimum similarity score for search results (0.0 to 1.0) */
-export const DEFAULT_MIN_SEARCH_SCORE = 0.40;
+export const DEFAULT_MIN_SEARCH_SCORE = 0.4;
 
 export class EngramIndex {
   private config: Config;
   private embedder: Embedder;
   private data: IndexData;
+  private indexIdentity: ReturnType<typeof buildEmbeddingIndexIdentity>;
   private dirty = false;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(config: Config, embedder: Embedder) {
+  constructor(
+    config: Config,
+    embedder: Embedder,
+    indexIdentity: ReturnType<typeof buildEmbeddingIndexIdentity>
+  ) {
     this.config = config;
     this.embedder = embedder;
+    this.indexIdentity = indexIdentity;
     this.data = {
       version: INDEX_VERSION,
       dimensions: config.dimensions,
+      embeddingModelId: indexIdentity.embeddingModelId,
+      providerFingerprint: indexIdentity.providerFingerprint,
       entries: {},
     };
   }
@@ -66,9 +77,35 @@ export class EngramIndex {
     if (fs.existsSync(indexFile)) {
       try {
         const raw = fs.readFileSync(indexFile, 'utf-8');
-        const parsed = JSON.parse(raw) as IndexData;
-        if (parsed.version === INDEX_VERSION && parsed.dimensions === this.config.dimensions) {
-          this.data = parsed;
+        const parsed = JSON.parse(raw) as Partial<IndexData>;
+
+        // Strict validation: reject if unknown top-level fields are present.
+        const keys = Object.keys(parsed);
+        const allowedKeys = new Set([
+          'version',
+          'dimensions',
+          'embeddingModelId',
+          'providerFingerprint',
+          'entries',
+        ]);
+        for (const key of keys) {
+          if (!allowedKeys.has(key)) {
+            return;
+          }
+        }
+
+        if (
+          typeof parsed.dimensions === 'number' &&
+          parsed.dimensions === this.indexIdentity.dimensions &&
+          typeof parsed.embeddingModelId === 'string' &&
+          parsed.embeddingModelId === this.indexIdentity.embeddingModelId &&
+          typeof parsed.providerFingerprint === 'string' &&
+          parsed.providerFingerprint === this.indexIdentity.providerFingerprint &&
+          parsed.entries &&
+          typeof parsed.entries === 'object' &&
+          !Array.isArray(parsed.entries)
+        ) {
+          this.data = parsed as IndexData;
         }
       } catch {
         // Corrupted — start fresh

@@ -83,7 +83,12 @@ export function loadConfig(): Config | null {
 
   const dir = envDir ? resolvePath(envDir) : file?.dir ? resolvePath(file.dir) : DEFAULT_DIR;
 
-  const dimensions = envInt('AGENT_ENGRAMS_DIMENSIONS') ?? file?.dimensions ?? 512;
+  const dimensions = envInt('AGENT_ENGRAMS_DIMENSIONS') ?? file?.dimensions;
+  if (typeof dimensions !== 'number' || Number.isNaN(dimensions)) {
+    throw new Error(
+      'Embedding dimensions are required. Run /engrams-setup or set AGENT_ENGRAMS_DIMENSIONS.'
+    );
+  }
 
   const providerType = envStr('AGENT_ENGRAMS_PROVIDER') ?? file?.provider?.type ?? 'openai';
 

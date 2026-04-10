@@ -150,7 +150,25 @@ Every config field can be overridden via environment variables. This is useful f
 4. Registers `engrams_write` and `engrams_search` tools the LLM can call
 5. Returns ranked results with file paths, relevance scores, scope, and content excerpts
 
-The index is stored at `~/.pi/agent-engrams/index.json`.
+The index is stored at `~/.pi/agent-engrams/index.json` with this top-level shape:
+
+```json
+{
+  "dimensions": 512,
+  "embeddingModelId": "Qwen3-Embedding-0.6B-4bit-DWQ",
+  "providerFingerprint": "openai:http://localhost:11434/v1",
+  "entries": {}
+}
+```
+
+`version: 3` may also be present for compatibility, but load validation is identity-based:
+- `dimensions` must match config exactly
+- `embeddingModelId` must match the resolved runtime model
+- `providerFingerprint` must match the resolved runtime provider fingerprint
+- `entries` must be an object (not an array)
+
+If any check fails, the index is treated as incompatible and rebuilt during sync.
+Legacy index files that only contain `dimensions` and `entries` are intentionally rebuilt once.
 
 ### Knowledge flywheel
 
@@ -229,7 +247,7 @@ Results below the minimum similarity threshold (default 0.40, configurable) are 
 
 ## Configuration reference
 
-All fields beyond provider config are optional:
+`dimensions` is required. Other fields beyond provider config are optional:
 
 ```json
 {

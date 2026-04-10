@@ -18,6 +18,7 @@ import { createEmbedder } from "./embedder";
 import { renderEngram, slugify, normalizeScope } from "./frontmatter";
 import { EngramIndex, type SearchFilters, type SearchResult } from "./index-store";
 import { FileWatcher } from "./watcher";
+import { buildEmbeddingIndexIdentity } from "./index-identity";
 
 /** Tool result `details` for engrams_write (optional fields when not applicable). */
 type EngramsWriteDetails = { path?: string; filename?: string };
@@ -205,7 +206,8 @@ You are part of a knowledge-sharing agent network. Agents learn collectively thr
   async function startIndex(config: Config, ctx: ExtensionContext) {
     try {
       const embedder = createEmbedder(config.provider, config.dimensions);
-      index = new EngramIndex(config, embedder);
+      const indexIdentity = buildEmbeddingIndexIdentity(config);
+      index = new EngramIndex(config, embedder, indexIdentity);
       await index.load();
 
       const SYNC_TIMEOUT_MS = 60_000;
