@@ -185,7 +185,7 @@ You are part of a knowledge-sharing agent network. Agents learn collectively thr
 - Use specific technical queries: "JWT token validation edge cases" not "authentication"
 
 ### WRITE (do this when you discover something transferable)
-- Ask: **would this help an agent on a completely different project?** If no, don't write it.
+- Ask: Before writing any engram, ask: would this help an agent working on a different project, OR in a different language, OR in a different domain? If not, do not write it.
 - Good engrams: debugging techniques, API quirks, language gotchas, architectural patterns, performance findings
 - Bad engrams: project file paths, database schemas, config values, obvious best practices
 - Set scope: prefer "universal" or "language" over "framework" or "project"
@@ -417,9 +417,9 @@ You are part of a knowledge-sharing agent network. Agents learn collectively thr
     label: "Write Engram",
     promptSnippet: "Write structured engrams to capture valuable knowledge for future agents",
     description:
-      "Write a structured engram to the shared knowledge store. Engrams capture TRANSFERABLE engineering knowledge — debugging techniques, API quirks, architectural patterns, performance insights — that help agents across ANY project. Do NOT use this for project-specific facts like file paths, database schemas, or configuration values. Ask yourself: would this help someone on a completely different codebase? If not, don't write it.",
+      "Write a structured engram to the shared knowledge store. Engrams capture TRANSFERABLE engineering knowledge — debugging techniques, API quirks, architectural patterns, performance insights — that help agents across ANY project. Do NOT use this for project-specific facts like file paths, database schemas, or configuration values. Ask yourself: Before writing any engram, ask: would this help an agent working on a different project, OR in a different language, OR in a different domain? If not, do not write it.",
     promptGuidelines: [
-      "Before writing an engram, ask: would this help an agent working on a COMPLETELY DIFFERENT project? If not, do not write it.",
+      "Before writing any engram, ask: would this help an agent working on a different project, OR in a different language, OR in a different domain? If not, do not write it.",
       "Write about PATTERNS and PRINCIPLES, not project-specific facts. Bad: 'The users table PK is a UUID'. Good: 'PostgreSQL UUID v7 columns are sortable by creation time unlike v4 — prefer for cursor pagination'.",
       "Bad: 'The API base URL is in src/config/api.ts' — project configuration, not transferable knowledge.",
       "Bad: 'The auth middleware is at src/middleware/auth.ts' — file path, not a pattern.",

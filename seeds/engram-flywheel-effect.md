@@ -24,7 +24,7 @@ At the beginning of any non-trivial task, search the engram store for relevant p
 ### 2. LEARN — Recognize Transferable Knowledge
 During a task, you will encounter non-obvious behaviors, surprising API responses, debugging dead-ends that lead to breakthroughs, and architectural decisions with non-obvious tradeoffs. These are engram candidates — but only if they're **transferable**.
 
-The key test: **would this help an agent working on a completely different project?** If yes, it's worth capturing. If it's specific to one codebase (file paths, schema details, config values), it's not.
+The key test: **Before writing any engram, ask: would this help an agent working on a different project, OR in a different language, OR in a different domain?** If yes, it's worth capturing. If it's specific to one codebase (file paths, schema details, config values), it's not.
 
 ### 3. WRITE — Capture for Future Agents
 When you identify transferable knowledge, write it as a structured engram using `engrams_write`. Be specific about the trigger conditions (when is this relevant?) and anti-trigger conditions (when would it be wrong to apply this?). Future agents depend on these fields to determine whether your engram applies to their situation.

@@ -17,7 +17,7 @@ The value of the engram store depends entirely on the quality of what's written 
 ## Insight
 
 ### The Transferability Test
-Before writing any engram, ask: **would this help an agent working on a completely different project, in a different language, in a different domain?** This single question filters out most low-value engrams.
+Before writing any engram, ask: **BBefore writing any engram, ask: would this help an agent working on a different project, OR in a different language, OR in a different domain? If not, do not write it.** This single question filters out most low-value engrams.
 
 ### What Makes a Good Engram
 

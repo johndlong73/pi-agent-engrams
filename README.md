@@ -186,7 +186,7 @@ Agents are guided to prefer `universal` or `language` scope. The scope field acc
 
 ### `engrams_write`
 
-Captures transferable engineering knowledge as a structured engram. Agents are guided to ask: *would this help an agent on a completely different project?*
+Captures transferable engineering knowledge as a structured engram. Agents are guided to ask: *Before writing any engram, ask: would this help an agent working on a different project, OR in a different language, OR in a different domain? If not, do not write it.*
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
